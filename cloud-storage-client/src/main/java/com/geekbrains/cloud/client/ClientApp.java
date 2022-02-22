@@ -13,6 +13,7 @@ public class ClientApp extends Application {
         Parent root = FXMLLoader.load(getClass().getResource("cloud.fxml"));
         primaryStage.setTitle("Cloud Storage [ GeekBrains ]");
         primaryStage.setScene(new Scene(root));
+        primaryStage.setResizable(false);
         primaryStage.show();
     }
 

@@ -5,9 +5,16 @@ import io.netty.handler.codec.serialization.ObjectDecoderInputStream;
 import io.netty.handler.codec.serialization.ObjectEncoderOutputStream;
 import javafx.application.Platform;
 import javafx.event.ActionEvent;
+import javafx.fxml.FXMLLoader;
 import javafx.fxml.Initializable;
+import javafx.scene.Parent;
+import javafx.scene.Scene;
+import javafx.scene.control.Alert;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.ListView;
 import javafx.scene.control.TextField;
+import javafx.stage.Modality;
+import javafx.stage.Stage;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
@@ -19,37 +26,43 @@ import java.nio.file.Paths;
 import java.util.ResourceBundle;
 
 @Slf4j
-public class ClientController implements Initializable {
+public class MainController implements Initializable {
 
     public TextField clientPathField;
     public TextField serverPathField;
     public ListView<String> clientView;
     public ListView<String> serverView;
 
-    private ObjectDecoderInputStream in;
+    private Socket socket;
     private ObjectEncoderOutputStream out;
-    private Path clientDir;
-    private Path serverDir;
+    private ObjectDecoderInputStream in;
+
+    public Path clientDir;
+    public Path serverDir;
+    public RenameController renameController;
+    public CreateDirController createDirController;
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
         try {
-            clientDir = Paths.get(System.getProperty("user.home"));
-            serverDir = Paths.get("localserver");
-
-            Socket socket = new Socket("localhost", 8189);
+            socket = new Socket("localhost", 8189);
             System.out.println("Network created...");
             out = new ObjectEncoderOutputStream(socket.getOutputStream());
             in = new ObjectDecoderInputStream(socket.getInputStream());
+
+            renameController = new RenameController();
+
+            Thread readThread = new Thread(this::readLoop);
+            readThread.setDaemon(true);
+            readThread.start();
+
+            clientDir = Paths.get(System.getProperty("user.home"));
 
             updateClientPathField(clientDir);
             updateClientView();
             initMouseListeners();
 
-            Thread readThread = new Thread(this::readLoop);
-            readThread.setDaemon(true);
-            readThread.start();
-        } catch (Exception e) {
+        } catch (IOException e) {
             e.printStackTrace();
         }
     }
@@ -60,14 +73,28 @@ public class ClientController implements Initializable {
                 CloudMessage message = (CloudMessage) in.readObject();
                 log.info("received: {}", message);
                 switch (message.getType()) {
+                    case AUTH_OK:
+                        processAuthConfirmMessage((AuthConfirm) message);
+                        break;
+                    case AUTH_ERROR:
+                        new Alert(Alert.AlertType.ERROR, "Неверные логин или пароль!", ButtonType.OK).showAndWait();
+                        break;
+                    case REG_OK:
+                        new Alert(Alert.AlertType.CONFIRMATION, "Успешная регистрация", ButtonType.OK).showAndWait();
+                        openWindow("authPanel.fxml");
+                        break;
+                    case REG_ERROR:
+                        new Alert(Alert.AlertType.ERROR, "Ошибка регистрации", ButtonType.OK).showAndWait();
+                        break;
                     case FILE:
                         processFileMessage((FileMessage) message);
                         break;
                     case LIST:
-                        processListMessage((ListMessage) message);
+                        updateServerView((ListMessage) message);
                         break;
                     case PATH_RESPONSE:
                         updateServerPathField((PathResponse) message);
+                        break;
                 }
             }
         } catch (Exception e) {
@@ -75,11 +102,17 @@ public class ClientController implements Initializable {
         }
     }
 
-    private void processListMessage(ListMessage message) {
-        Platform.runLater(() -> {
-            serverView.getItems().clear();
-            serverView.getItems().addAll(message.getFiles());
-        });
+    public void sendAuthMessage(String login, String password) throws IOException {
+        out.writeObject(new AuthMessage(login, password));
+        out.flush();
+    }
+
+    private void processAuthConfirmMessage(AuthConfirm message) {
+    }
+
+    public void sendRegMessage(String login, String password, String nickname) throws IOException {
+        out.writeObject(new RegMessage(login, password, nickname));
+        out.flush();
     }
 
     private void processFileMessage(FileMessage message) throws IOException {
@@ -87,20 +120,33 @@ public class ClientController implements Initializable {
         Platform.runLater(this::updateClientView);
     }
 
-    public void uploadFile(ActionEvent actionEvent) throws IOException {
+    public void uploadButton(ActionEvent actionEvent) throws IOException {
         String fileName = clientView.getSelectionModel().getSelectedItem();
         out.writeObject(new FileMessage(clientDir.resolve(fileName)));
     }
 
-    public void downloadFile(ActionEvent actionEvent) throws IOException {
+    public void downloadButton(ActionEvent actionEvent) throws IOException {
         String fileName = serverView.getSelectionModel().getSelectedItem();
         out.writeObject(new FileRequest(fileName));
     }
 
-    public void renameFile(ActionEvent actionEvent) {
+    public void renameFileButton(ActionEvent actionEvent) throws IOException {
+        String oldFileName = serverView.getSelectionModel().getSelectedItem();
+        openWindow("renamePanel.fxml");
+        renameController.newFileNameTextField.setText(oldFileName);
     }
 
-    public void createDir(ActionEvent actionEvent) {
+    public void renameFile(String newFileName) throws IOException {
+        String oldFileName = serverView.getSelectionModel().getSelectedItem();
+        out.writeObject(new RenameMessage(oldFileName, newFileName));
+    }
+
+    public void createDirButton(ActionEvent actionEvent) throws IOException {
+        openWindow("createDirPanel.fxml");
+    }
+
+    public void createDirOnStorage(String newDirName) throws IOException {
+        out.writeObject(new CreateDirMessage(createDirController.newDirNameTextField.getText()));
     }
 
     public void deleteFile(ActionEvent actionEvent) throws IOException {
@@ -117,6 +163,13 @@ public class ClientController implements Initializable {
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    private void updateServerView(ListMessage message) {
+        Platform.runLater(() -> {
+            serverView.getItems().clear();
+            serverView.getItems().addAll(message.getFiles());
+        });
     }
 
     private void initMouseListeners() {
@@ -161,9 +214,42 @@ public class ClientController implements Initializable {
         out.writeObject(new PathUpRequest());
     }
 
-    private void updateServerPathField(PathResponse message) {
+    public void updateServerPathField(PathResponse message) {
         Platform.runLater(() -> {
             serverPathField.setText(message.getNewDir());
         });
+    }
+
+    public void openWindow(String fxml) {
+            try {
+                FXMLLoader loader = new FXMLLoader(getClass().getResource(fxml));
+                Parent root1 = loader.load();
+
+                if (fxml.equals("authPanel.fxml")) {
+                    AuthController authController = loader.getController();
+                }
+                if (fxml.equals("renamePanel.fxml")) {
+                    RenameController renameController = loader.getController();
+                }
+                if (fxml.equals("createDirPanel.fxml")) {
+                    CreateDirController createDirController = loader.getController();
+                }
+//                MainController controller = loader.getController();
+                Stage stage = new Stage();
+                stage.initModality(Modality.APPLICATION_MODAL);
+                stage.setScene(new Scene(root1));
+                stage.resizableProperty().set(false);
+                stage.show();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+    }
+
+    public void openAuthWindow(ActionEvent actionEvent) {
+        openWindow("authPanel.fxml");
+    }
+
+    public void exit(ActionEvent actionEvent) {
+        Platform.exit();
     }
 }

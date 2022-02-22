@@ -31,6 +31,7 @@ public class ServerApp {
                         }
                     });
             ChannelFuture future = b.bind(8189).sync();
+            System.out.println("Server started...");
             future.channel().closeFuture().sync();
         } catch (InterruptedException e) {
             e.printStackTrace();
